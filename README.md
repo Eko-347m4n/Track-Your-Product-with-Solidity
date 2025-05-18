@@ -11,6 +11,8 @@ after deploy, to intract:
 
 ## How to intract
 
+bash `const tracker = await ethers.getContractAt("ProductTrace", "0x000")
+
 ### Add produsen
 
 bash `await productTrace.addProducer("0xProdusenAddress")`
