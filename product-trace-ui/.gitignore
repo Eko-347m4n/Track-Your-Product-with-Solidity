@@ -1,0 +1,31 @@
+node_modules
+dist
+dist-ssr
+*.local # For local configuration files, e.g. .env.local
+
+# Environment variables file
+# Ensure this file is not committed if it contains sensitive credentials
+.env
+
+# Coverage reports
+/coverage
+coverage.json
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS-generated files
+.DS_Store
+.DS_Store? # More specific version for .DS_Store files
+._* # macOS resource forks
+.Spotlight-V100 # macOS Spotlight indexing
+.Trashes # macOS Trash folder files
+ehthumbs.db # Windows thumbnail cache
+Thumbs.db # Windows thumbnail cache
