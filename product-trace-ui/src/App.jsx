@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { ethers } from 'ethers';
 import * as QRCodeReact from 'qrcode.react'; // Use namespace import
 import deployedConfig from '../deployed.json';
+
+// Ensure the ABI and address are correctly imported from deployed.json
 import { TrashIcon } from '@heroicons/react/24/outline'; // For a nicer remove button
 
 const contractAddress = deployedConfig.address;
@@ -21,12 +23,18 @@ function App() {
 
   // New states for QR codes and inputs
   const [lastRawMaterialId, setLastRawMaterialId] = useState(null);
-  const [rawMaterialInputs, setRawMaterialInputs] = useState([{ id: '' }]);
+  const [rawMaterialInputs, setRawMaterialInputs] = useState([{ id: '', quantity: '' }]);
+  const [lastProductId, setLastProductId] = useState(null);
   const [lastBatchId, setLastBatchId] = useState(null);
   const [packagingConfirmed, setPackagingConfirmed] = useState(false);
   const [halalCertHash, setHalalCertHash] = useState('');
+  const [bpomCertHash, setBpomCertHash] = useState('');
   const [fullTraceData, setFullTraceData] = useState(null);
-  const [traceBatchIdInput, setTraceBatchIdInput] = useState('');
+  const [traceProductIdInput, setTraceProductIdInput] = useState('');
+  const [startProductionProductId, setStartProductionProductId] = useState('');
+  const [availableRawMaterials, setAvailableRawMaterials] = useState([]);
+  const [isProducer, setIsProducer] = useState(false);
+  // Remove any reference to traceBatchIdInput which is undefined
 
   // Loading states for async operations
   const [isAddingMaterial, setIsAddingMaterial] = useState(false);
@@ -48,12 +56,47 @@ function App() {
           const prov = new ethers.BrowserProvider(window.ethereum);
           const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
           const signer = await prov.getSigner();
-          const ctr = new ethers.Contract(contractAddress, deployedConfig.abi, signer);
+          // Use the ABI and address from deployed.json explicitly
+          const ctr = new ethers.Contract(deployedConfig.address, deployedConfig.abi, signer);
 
           setProvider(prov);
           setContract(ctr);
           setAccount(accounts[0]);
           setInitializationStatus({ loading: false, message: `Connected as: ${accounts[0]}`, type: 'success' });
+
+          // Check if current account is a producer by reading ProducerAdded events
+          let isProducer = false;
+          try {
+            const filterProducerAdded = ctr.filters.ProducerAdded();
+            const eventsProducerAdded = await ctr.queryFilter(filterProducerAdded);
+            const producerAddresses = eventsProducerAdded.map(event => event.args.producerAddress.toLowerCase());
+            isProducer = producerAddresses.includes(accounts[0].toLowerCase());
+          } catch (e) {
+            console.warn("Failed to check producer status via events:", e);
+            isProducer = false;
+          }
+          setIsProducer(isProducer);
+
+          // Fetch available raw materials for dropdown by reading ProductCreated events
+          const filter = ctr.filters.ProductCreated();
+          const events = await ctr.queryFilter(filter);
+          const rawMaterials = [];
+
+          for (const event of events) {
+            const productId = event.args.productId.toNumber();
+            // Fetch product details individually
+            const product = await ctr.products(productId);
+            // product.stage is uint8, RawMaterial stage is 1
+            if (product.stage === 1 && product.availableQuantity.gt(0)) {
+              rawMaterials.push({
+                id: product.id.toString(),
+                name: product.name,
+                availableQuantity: product.availableQuantity.toString(),
+              });
+            }
+          }
+          setAvailableRawMaterials(rawMaterials);
+
         } catch (error) {
           console.error("Failed to initialize connection or contract:", error);
           setInitializationStatus({ loading: false, message: "Failed to connect. Ensure MetaMask is installed, unlocked, and on the correct network.", type: 'error' });
@@ -65,50 +108,56 @@ function App() {
     init();
   }, []);
 
-  // Add raw material and generate QR code with rawMaterialId
+  // Add raw material and generate QR code with productId
   const handleAddRawMaterial = async (e) => {
     e.preventDefault();
     setAddMaterialFeedback({ text: '', type: '' }); // Clear previous feedback
     if (!contract) return setAddMaterialFeedback({ text: "Contract not ready.", type: 'error' });
+    if (!isProducer) return setAddMaterialFeedback({ text: "Only producers can add raw materials.", type: 'error' });
 
     const form = e.target;
+    const name = form.name.value;
     const source = form.source.value;
     const quality = form.quality.value;
-    const quantity = parseInt(form.quantity.value);
+    const initialQuantity = parseInt(form.quantity.value);
     const pickupTimeManual = form.pickupTimeManual.value;
+
+    if (isNaN(initialQuantity) || initialQuantity <= 0) {
+      return setAddMaterialFeedback({ text: "Quantity must be a positive number.", type: 'error' });
+    }
 
     setIsAddingMaterial(true);
     try {
-      const tx = await contract.inputRawMaterial(source, quality, quantity, pickupTimeManual);
+      const tx = await contract.createProduct(name, source, quality, initialQuantity, pickupTimeManual);
       const receipt = await tx.wait();
-      
-      const event = receipt.events?.find(e => e.event === 'RawMaterialAdded');
+
+      const event = receipt.events?.find(e => e.event === 'ProductCreated');
       if (event && event.args) {
-        const rawMaterialId = event.args.materialId.toString();
-        setLastRawMaterialId(rawMaterialId);
-        setAddMaterialFeedback({ text: `Raw material added with ID: ${rawMaterialId}`, type: 'success' });
+        const productId = event.args.productId.toString();
+        setLastProductId(productId);
+        setAddMaterialFeedback({ text: `Raw material product created with ID: ${productId}`, type: 'success' });
       } else {
-        console.warn("RawMaterialAdded event not found or args missing in transaction receipt.", receipt);
-        setAddMaterialFeedback({ text: "Raw material added, but ID could not be retrieved from event.", type: 'warn' });
+        console.warn("ProductCreated event not found or args missing in transaction receipt.", receipt);
+        setAddMaterialFeedback({ text: "Raw material product created, but ID could not be retrieved from event.", type: 'warn' });
       }
       form.reset();
     } catch (error) {
-      console.error("Failed to add raw material:", error);
-      setAddMaterialFeedback({ text: `Failed to add raw material: ${error.message || "Unknown error"}`, type: 'error' });
+      console.error("Failed to create raw material product:", error);
+      setAddMaterialFeedback({ text: `Failed to create raw material product: ${error.message || "Unknown error"}`, type: 'error' });
     } finally {
       setIsAddingMaterial(false);
     }
   };
 
-  // Handle dynamic input for multiple raw materials during production start
-  const handleRawMaterialIdChange = (index, value) => {
+  // Handle dynamic input for multiple raw materials with quantities during production start
+  const handleRawMaterialInputChange = (index, field, value) => {
     const newInputs = [...rawMaterialInputs];
-    newInputs[index].id = value;
+    newInputs[index][field] = value;
     setRawMaterialInputs(newInputs);
   };
 
   const addRawMaterialInput = () => {
-    setRawMaterialInputs([...rawMaterialInputs, { id: '' }]);
+    setRawMaterialInputs([...rawMaterialInputs, { id: '', quantity: '' }]);
   };
 
   const removeRawMaterialInput = (index) => {
@@ -116,38 +165,53 @@ function App() {
     setRawMaterialInputs(newInputs);
   };
 
-  // Start production with multiple rawMaterialIds
+  // Start production with productId, multiple rawMaterialIds and quantities
   const handleStartProduction = async (e) => {
     e.preventDefault();
     setStartProductionFeedback({ text: '', type: '' });
     if (!contract) return setStartProductionFeedback({ text: "Contract not ready.", type: 'error' });
+    if (!isProducer) return setStartProductionFeedback({ text: "Only producers can start production.", type: 'error' });
 
     const form = e.target;
+    const productId = parseInt(form.productId.value);
     const startTimeManual = form.startTimeManual.value;
 
-    // Collect rawMaterialIds from inputs
-    const rawMaterialIds = rawMaterialInputs.map(input => parseInt(input.id)).filter(id => !isNaN(id));
+    if (isNaN(productId) || productId <= 0) {
+      return setStartProductionFeedback({ text: "Please enter a valid Product ID.", type: 'error' });
+    }
+
+    // Collect rawMaterialIds and quantities from inputs
+    const rawMaterialIds = [];
+    const quantitiesUsed = [];
+    for (const input of rawMaterialInputs) {
+      const id = parseInt(input.id);
+      const quantity = parseInt(input.quantity);
+      if (!isNaN(id) && id > 0 && !isNaN(quantity) && quantity > 0) {
+        rawMaterialIds.push(id);
+        quantitiesUsed.push(quantity);
+      }
+    }
 
     if (rawMaterialIds.length === 0) {
-      return setStartProductionFeedback({ text: "Please enter at least one valid Raw Material ID.", type: 'error' });
+      return setStartProductionFeedback({ text: "Please enter at least one valid Raw Material ID and quantity.", type: 'error' });
     }
 
     setIsStartingProduction(true);
     try {
-      const tx = await contract.startProduction(rawMaterialIds, startTimeManual);
+      const tx = await contract.startProduction(productId, rawMaterialIds, quantitiesUsed, startTimeManual);
       const receipt = await tx.wait();
-      const event = receipt.events?.find(e => e.event === 'ProductionStarted');
+      const event = receipt.events?.find(e => e.event === 'BatchCreated');
       if (event && event.args) {
         const batchId = event.args.batchId.toString();
         setLastBatchId(batchId);
         setPackagingConfirmed(false); // Reset packaging confirmation for new batch
         setStartProductionFeedback({ text: `Production started with Batch ID: ${batchId}`, type: 'success' });
         form.reset();
+        setRawMaterialInputs([{ id: '', quantity: '' }]); // Reset inputs
       } else {
-        console.warn("ProductionStarted event not found or args missing in transaction receipt.", receipt);
+        console.warn("BatchCreated event not found or args missing in transaction receipt.", receipt);
         setStartProductionFeedback({ text: "Production started, but Batch ID could not be retrieved from event.", type: 'warn' });
       }
-      setRawMaterialInputs([{ id: '' }]); // Reset to one empty input
     } catch (error) {
       console.error("Failed to start production:", error);
       setStartProductionFeedback({ text: `Failed to start production: ${error.message || "Unknown error"}`, type: 'error' });
@@ -161,19 +225,22 @@ function App() {
     e.preventDefault();
     setPackageProductFeedback({ text: '', type: '' });
     if (!contract) return setPackageProductFeedback({ text: "Contract not ready.", type: 'error' });
-    if (!lastBatchId) return setPackageProductFeedback({ text: "No production batch to package.", type: 'error' });
+    if (!isProducer) return setPackageProductFeedback({ text: "Only producers can package products.", type: 'error' });
+    if (!lastProductId) return setPackageProductFeedback({ text: "No product to package.", type: 'error' });
 
     const form = e.target;
     const halalCertHashInput = form.halalCertHash.value;
+    const bpomCertHashInput = form.bpomCertHash.value;
     const packagingTimeManual = form.packagingTimeManual.value;
 
     setIsPackagingProduct(true);
     try {
-      const tx = await contract.packageProduct(lastBatchId, halalCertHashInput, packagingTimeManual);
+      const tx = await contract.packageProduct(lastProductId, halalCertHashInput, bpomCertHashInput, packagingTimeManual);
       await tx.wait();
       setPackagingConfirmed(true);
       setHalalCertHash(halalCertHashInput);
-      setPackageProductFeedback({ text: `Product packaged for Batch ID: ${lastBatchId}`, type: 'success' });
+      setBpomCertHash(bpomCertHashInput);
+      setPackageProductFeedback({ text: `Product packaged for Product ID: ${lastProductId}`, type: 'success' });
       form.reset();
     } catch (error) {
       console.error("Failed to package product:", error);
@@ -183,44 +250,47 @@ function App() {
     }
   };
 
-  // Get full trace by batchId
+  // Get full trace by productId
   const handleGetFullTrace = async (e) => {
     e.preventDefault();
     setGetTraceFeedback({ text: '', type: '' });
     if (!contract) return setGetTraceFeedback({ text: "Contract not ready.", type: 'error' });
 
-    const batchId = parseInt(traceBatchIdInput);
-    if (isNaN(batchId) || batchId <= 0) return setGetTraceFeedback({ text: "Please enter a valid Batch ID.", type: 'error' });
+    const productId = parseInt(traceProductIdInput);
+    if (isNaN(productId) || productId <= 0) return setGetTraceFeedback({ text: "Please enter a valid Product ID.", type: 'error' });
 
     setFullTraceData(null); // Clear previous trace data
     setIsFetchingTrace(true);
     try {
-      const [
-        bahanIdsBigInt,
-        sumber,
-        kualitas,
-        waktuManual,
-        waktuProduksiBigInt,
-        waktuKemasBigInt,
-        halalHash,
-        waktuProduksiManual,
-        waktuKemasManual
-      ] = await contract.getFullTrace(batchId);
+      const details = await contract.getFullTrace(productId);
 
       setFullTraceData({
-        bahanIds: bahanIdsBigInt.map(id => id.toString()),
-        sumber: sumber,
-        kualitas: kualitas,
-        waktuManual: waktuManual,
-        waktuProduksi: new Date(Number(waktuProduksiBigInt) * 1000).toLocaleString(),
-        waktuKemas: waktuKemasBigInt && Number(waktuKemasBigInt) > 0 
-                      ? new Date(Number(waktuKemasBigInt) * 1000).toLocaleString() 
-                      : 'Not packaged yet',
-        halalHash: halalHash,
-        waktuProduksiManual: waktuProduksiManual,
-        waktuKemasManual: waktuKemasManual
+        productId: details.productId.toString(),
+        productName: details.productName,
+        productSource: details.productSource,
+        productQuality: details.productQuality,
+        productInitialQuantity: details.productInitialQuantity.toString(),
+        productAvailableQuantity: details.productAvailableQuantity.toString(),
+        productPickupTimeManual: details.productPickupTimeManual,
+        productStage: details.productStage,
+        productLastUpdateTimestamp: new Date(Number(details.productLastUpdateTimestamp) * 1000).toLocaleString(),
+        productOwner: details.productOwner,
+        productDistributionDetails: details.productDistributionDetails,
+        batchId: details.batchId.toString(),
+        consumedProductIds: details.consumedProductIds.map(id => id.toString()),
+        consumedProductNames: details.consumedProductNames,
+        consumedProductSources: details.consumedProductSources,
+        consumedQuantitiesUsed: details.consumedQuantitiesUsed.map(q => q.toString()),
+        batchStartTime: new Date(Number(details.batchStartTime) * 1000).toLocaleString(),
+        batchPackagingTime: details.batchPackagingTime && Number(details.batchPackagingTime) > 0
+          ? new Date(Number(details.batchPackagingTime) * 1000).toLocaleString()
+          : 'Not packaged yet',
+        batchHalalCertHash: details.batchHalalCertHash,
+        batchBpomCertHash: details.batchBpomCertHash,
+        batchStartTimeManual: details.batchStartTimeManual,
+        batchPackagingTimeManual: details.batchPackagingTimeManual
       });
-      setGetTraceFeedback({ text: `Trace data loaded for Batch ID: ${batchId}`, type: 'success' });
+      setGetTraceFeedback({ text: `Trace data loaded for Product ID: ${productId}`, type: 'success' });
     } catch (error) {
       console.error("Failed to get full trace:", error);
       setGetTraceFeedback({ text: `Failed to get full trace: ${error.message || "Unknown error"}`, type: 'error' });
@@ -284,20 +354,34 @@ function App() {
             <form onSubmit={handleStartProduction} className="space-y-5">
               {rawMaterialInputs.map((input, index) => (
                 <div key={index} className="flex items-center gap-3">
-                  <input
-                    type="number"
-                    placeholder="Raw Material ID"
+                  <select
                     value={input.id}
-                    onChange={(e) => handleRawMaterialIdChange(index, e.target.value)}
+                    onChange={(e) => handleRawMaterialInputChange(index, 'id', e.target.value)}
                     className="border border-yellow-600 p-3 rounded-lg flex-grow bg-gray-800 text-yellow-300 focus:ring-yellow-500 focus:border-yellow-500"
                     required
+                  >
+                    <option value="">Select Raw Material</option>
+                    {availableRawMaterials.map((material) => (
+                      <option key={material.id.toString()} value={material.id.toString()}>
+                        {material.name} (ID: {material.id.toString()}, Available: {material.availableQuantity.toString()})
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="number"
+                    placeholder="Quantity"
+                    value={input.quantity}
+                    onChange={(e) => handleRawMaterialInputChange(index, 'quantity', e.target.value)}
+                    className="border border-yellow-600 p-3 rounded-lg w-24 bg-gray-800 text-yellow-300 focus:ring-yellow-500 focus:border-yellow-500"
+                    required
+                    min="1"
                   />
                   {rawMaterialInputs.length > 1 && (
                     <button 
                       type="button" 
                       onClick={() => removeRawMaterialInput(index)} 
                       className="p-2 text-red-500 hover:text-red-700"
-                      title="Remove Raw Material ID"
+                      title="Remove Raw Material"
                     >
                       <TrashIcon className="h-5 w-5" />
                     </button>
@@ -359,9 +443,9 @@ function App() {
             <form onSubmit={handleGetFullTrace} className="space-y-5">
               <input
                 type="number"
-                placeholder="Enter Batch ID to Trace"
-                value={traceBatchIdInput}
-                onChange={(e) => setTraceBatchIdInput(e.target.value)}
+                placeholder="Enter Product ID to Trace"
+                value={traceProductIdInput}
+                onChange={(e) => setTraceProductIdInput(e.target.value)}
                 className="border border-indigo-600 p-3 w-full rounded-lg bg-gray-800 text-indigo-300 focus:ring-indigo-500 focus:border-indigo-500"
               />
               <button type="submit" className="bg-indigo-600 text-white px-6 py-3 rounded-lg hover:bg-indigo-700 w-full disabled:opacity-60 flex items-center justify-center gap-2 font-semibold" disabled={isFetchingTrace}>
@@ -376,36 +460,37 @@ function App() {
                 {getTraceFeedback.text}
               </p>
             )}
-            {fullTraceData && (
-              <div className="mt-6 p-6 bg-indigo-900 rounded-xl shadow-inner text-indigo-300">
-                <h3 className="text-xl font-semibold mb-4">Trace Details for Batch ID: {traceBatchIdInput}</h3>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full table-auto border-collapse border border-indigo-600 text-left">
-                    <thead className="bg-indigo-800">
-                      <tr>
-                        <th className="border border-indigo-600 px-3 py-2 text-sm font-medium">Raw Material ID</th>
-                        <th className="border border-indigo-600 px-3 py-2 text-sm font-medium">Source</th>
-                        <th className="border border-indigo-600 px-3 py-2 text-sm font-medium">Quality</th>
-                        <th className="border border-indigo-600 px-3 py-2 text-sm font-medium">Pickup Time</th>
-                      </tr>
-                    </thead>
-                    <tbody className="bg-indigo-800">
-                      {fullTraceData.bahanIds.map((id, idx) => (
-                        <tr key={id} className="hover:bg-indigo-700">
-                          <td className="border border-indigo-600 px-3 py-2 text-sm">{id}</td>
-                          <td className="border border-indigo-600 px-3 py-2 text-sm">{fullTraceData.sumber[idx]}</td>
-                          <td className="border border-indigo-600 px-3 py-2 text-sm">{fullTraceData.kualitas[idx]}</td>
-                          <td className="border border-indigo-600 px-3 py-2 text-sm">{fullTraceData.waktuManual[idx]}</td>
+              {fullTraceData && (
+                <div className="mt-6 p-6 bg-indigo-900 rounded-xl shadow-inner text-indigo-300">
+                  <h3 className="text-xl font-semibold mb-4">Trace Details for Product ID: {traceProductIdInput}</h3>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full table-auto border-collapse border border-indigo-600 text-left">
+                      <thead className="bg-indigo-800">
+                        <tr>
+                          <th className="border border-indigo-600 px-3 py-2 text-sm font-medium">Raw Material ID</th>
+                          <th className="border border-indigo-600 px-3 py-2 text-sm font-medium">Name</th>
+                          <th className="border border-indigo-600 px-3 py-2 text-sm font-medium">Source</th>
+                          <th className="border border-indigo-600 px-3 py-2 text-sm font-medium">Quantity Used</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className="bg-indigo-800">
+                        {fullTraceData.consumedProductIds.map((id, idx) => (
+                          <tr key={id} className="hover:bg-indigo-700">
+                            <td className="border border-indigo-600 px-3 py-2 text-sm">{id}</td>
+                            <td className="border border-indigo-600 px-3 py-2 text-sm">{fullTraceData.consumedProductNames[idx]}</td>
+                            <td className="border border-indigo-600 px-3 py-2 text-sm">{fullTraceData.consumedProductSources[idx]}</td>
+                            <td className="border border-indigo-600 px-3 py-2 text-sm">{fullTraceData.consumedQuantitiesUsed[idx]}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p className="mt-4 text-sm"><strong>Production Start Time:</strong> {fullTraceData.batchStartTime} (Manual: {fullTraceData.batchStartTimeManual || 'N/A'})</p>
+                  <p className="text-sm"><strong>Packaging Time:</strong> {fullTraceData.batchPackagingTime} (Manual: {fullTraceData.batchPackagingTimeManual || 'N/A'})</p>
+                  <p className="text-sm"><strong>Halal Certificate Hash:</strong> {fullTraceData.batchHalalCertHash || 'N/A'}</p>
+                  <p className="text-sm"><strong>BPOM Certificate Hash:</strong> {fullTraceData.batchBpomCertHash || 'N/A'}</p>
                 </div>
-                <p className="mt-4 text-sm"><strong>Production Time:</strong> {fullTraceData.waktuProduksi} (Manual: {fullTraceData.waktuProduksiManual || 'N/A'})</p>
-                <p className="text-sm"><strong>Packaging Time:</strong> {fullTraceData.waktuKemas} (Manual: {fullTraceData.waktuKemasManual || 'N/A'})</p>
-                <p className="text-sm"><strong>Halal Certificate Hash:</strong> {fullTraceData.halalHash || 'N/A'}</p>
-              </div>
-            )}
+              )}
           </section>
         </>
       )}
