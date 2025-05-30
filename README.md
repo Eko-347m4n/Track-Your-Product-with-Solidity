@@ -1,150 +1,202 @@
-# Product Traceability - Proof of Authority (PoA) Tracker
+# Product Traceability PoA (Proof of Authority / Concept)
 
-This project implements a smart contract-based system for tracking products through their supply chain, from raw materials to packaged goods. It's designed with a Proof of Authority (PoA) mindset where authorized producers are responsible for inputting data at various stages.
-
-## Description
-
-The core of the project is the `ProductTrace.sol` smart contract, which allows for:
-*   Registering authorized producers.
-*   Recording the input of raw materials with details like source, quality, quantity, and pickup time.
-*   Starting production batches, linking them to specific raw materials.
-*   Marking production batches as packaged, including a Halal certification hash and packaging time.
-*   Retrieving a full trace of a product batch, detailing all associated raw materials and production/packaging timestamps.
-
-This system aims to provide transparency and verifiability in the supply chain.
+This project is a blockchain-based system designed for tracking products through various stages of their lifecycle, from raw material sourcing to final distribution. It aims to provide enhanced transparency, immutability, and accountability in the supply chain.
 
 ## Features
 
-*   **Producer Management**: Owner can add new producers who are authorized to input data.
-*   **Raw Material Logging**: Producers can log detailed information about raw materials.
-*   **Production Batch Tracking**: Producers can initiate production batches, linking multiple raw materials.
-*   **Product Packaging**: Producers can mark batches as packaged, adding final details like Halal certification.
-*   **Full Traceability**: Anyone can retrieve the complete history of a product batch using its ID.
-*   **Event-Driven**: Emits events for significant actions (e.g., `ProducerAdded`, `RawMaterialAdded`, `ProductionStarted`, `ProductPackaged`).
-*   **Custom Errors**: Uses custom errors for clearer and more gas-efficient error handling.
-*   **Ownership**: Contract has an owner with special privileges (e.g., adding producers).
+*   **Producer Management:**
+    *   Contract owner can add and remove authorized producer addresses.
+    *   Role-based access control: Only authorized producers can initiate product creation and other key actions.
+*   **Product Lifecycle Tracking:**
+    *   **Create Product (Raw Material):** Authorized producers can register new products, specifying details like name, source, quality, initial quantity, and pickup time. Products start in the `RAW_MATERIAL` stage.
+    *   **Start Production:** The owner of a product (initially the creating producer) can start its production. This process consumes specified quantities of other raw material products and creates a new batch associated with the main product. The main product's stage changes to `PRODUCTION`.
+    *   **Package Product:** The product owner can mark a product batch as packaged, adding details like Halal and BPOM certification hashes (or other relevant certifications) and manual packaging time. The product's stage changes to `PACKAGING`.
+    *   **Distribute Product:** The product owner can record distribution details for a packaged product, marking its stage as `DISTRIBUTION`.
+*   **Comprehensive Traceability:**
+    *   `getFullTrace(productId)`: Retrieve a detailed history of a specific product, including its current stage, ownership, batch information (consumed materials, quantities, production/packaging times, certifications), and distribution details.
+    *   `getAllProducts()`: View a list of all products registered in the system.
+*   **Event-Driven Architecture:** The smart contract emits events for significant actions (e.g., `ProductCreated`, `ProducerAdded`, `ProductStageChanged`, `BatchCreated`), allowing for off-chain services to listen and react.
+*   **Data Integrity:** Utilizes custom error messages for clear and specific revert reasons (e.g., `ProductTrace__NotOwner`, `ProductTrace__InvalidProductStage`).
 
-## Contract Overview (`ProductTrace.sol`)
+## Technology Stack
 
-### Key Functionalities
+*   **Smart Contracts:**
+    *   Solidity (Programming Language)
+    *   Hardhat (Development Environment, Testing, Deployment)
+        *   `@nomicfoundation/hardhat-toolbox`
+        *   `@nomicfoundation/hardhat-chai-matchers`
+        *   `ethers.js` (via Hardhat)
+*   **Frontend (UI):**
+    *   React.js (JavaScript Library for UI)
+    *   Vite (Build Tool & Dev Server)
+    *   `ethers.js` (for blockchain interaction from the client-side - *assumed*)
+*   **Testing:**
+    *   Chai (Assertion Library)
+    *   Mocha (Test Runner - via Hardhat)
 
-*   `addProducer(address _prod)`: Allows the owner to authorize a new producer.
-*   `inputRawMaterial(string memory _source, string memory _quality, uint _quantity, string memory _pickupTimeManual)`: Allows an authorized producer to add a new raw material.
-*   `startProduction(uint[] memory _rawMaterialIds, string memory _startTimeManual)`: Allows an authorized producer to start a new production batch, linking it to existing raw materials.
-*   `packageProduct(uint batchId, string memory _halalCertHash, string memory _packagingTimeManual)`: Allows an authorized producer to mark a production batch as packaged.
-*   `getFullTrace(uint batchId)`: A public view function to retrieve all traceability information for a given batch ID.
+## Project Structure
 
-### State Variables & Structs
+```
+Tracker PoA/
+├── contracts/
+│   ├── ProductTrace.sol  # Main smart contract for product traceability
+│   └── Lock.sol          # Example/Utility contract (from Hardhat template)
+├── test/
+│   ├── ProductTrace.test.js # Comprehensive tests for ProductTrace.sol
+│   └── Lock.js              # Tests for Lock.sol
+├── scripts/
+│   └── deploy.js         # (Assumed) Deployment script for contracts
+├── product-trace-ui/
+│   ├── src/
+│   │   ├── App.jsx       # Main React application component
+│   │   └── main.jsx      # React application entry point
+│   ├── index.html
+│   ├── package.json
+│   └── vite.config.js    # (Likely) Vite configuration
+├── hardhat.config.js     # Hardhat configuration
+├── package.json
+└── README.md
+```
 
-*   `owner`: The immutable address of the contract deployer/owner.
-*   `producers`: A mapping `(address => bool)` to track authorized producers.
-*   `rawMaterialCount`: Counter for unique raw material IDs.
-*   `batchCount`: Counter for unique production batch IDs.
-*   `RawMaterial` (struct): Stores details for each raw material (id, source, quality, quantity, pickupTimeManual, timestampAdded, producer).
-*   `ProductionBatch` (struct): Stores details for each production batch (id, rawMaterialIds, startTime, packagingTime, halalCertHash, startTimeManual, packagingTimeManual).
-*   `rawMaterials`: Mapping `(uint => RawMaterial)` storing raw material data.
-*   `batches`: Mapping `(uint => ProductionBatch)` storing production batch data.
-
-### Events
-
-*   `ProducerAdded(address indexed producerAddress)`
-*   `RawMaterialAdded(uint indexed materialId, address indexed producer, string source, uint quantity)`
-*   `ProductionStarted(uint indexed batchId, address indexed producer, uint[] rawMaterialIds)`
-*   `ProductPackaged(uint indexed batchId, address indexed producer, string halalCertHash)`
-
-### Custom Errors
-
-*   `ProductTrace__NotOwner()`
-*   `ProductTrace__NotAuthorizedProducer()`
-*   `ProductTrace__ZeroAddressNotAllowed()`
-*   `ProductTrace__BatchNotStarted()`
-*   `ProductTrace__BatchAlreadyPackaged()`
-*   `ProductTrace__BatchDoesNotExist()`
-*   `ProductTrace__RawMaterialDoesNotExist()`
-
-## Getting Started
-
-### Prerequisites
+## Prerequisites
 
 *   Node.js (v18.x or later recommended)
-*   npm (usually comes with Node.js) or yarn
-*   Hardhat (will be installed as a project dependency)
+*   npm or yarn
 
-### Installation
+## Setup and Installation
 
 1.  **Clone the repository:**
     ```bash
-    git clone <your-repository-url>
-    cd Tracker-PoA 
+    git clone <repository-url>
+    cd "Tracker PoA"
     ```
 
-2.  **Install dependencies:**
-    Using npm:
+2.  **Install Hardhat project dependencies:**
+    (In the project root directory: `Tracker PoA/`)
     ```bash
     npm install
-    ```
-    Or using yarn:
-    ```bash
+    # or
     yarn install
     ```
 
-## Usage
+3.  **Install Frontend UI dependencies:**
+    ```bash
+    cd product-trace-ui
+    npm install
+    # or
+    yarn install
+    cd ..
+    ```
 
-This project uses Hardhat as the development environment.
+## Running the Project
 
-### Compile Contracts
+### 1. Smart Contracts
 
-To compile the smart contracts:
-```bash
-npx hardhat compile
-```
-This will generate ABI files and typechain typings in the `artifacts` and `typechain-types` directories, respectively.
+*   **Compile Contracts:**
+    ```bash
+    npx hardhat compile
+    ```
 
-### Running Tests
+*   **Run Tests:**
+    ```bash
+    npx hardhat test
+    ```
+    To run tests for a specific contract:
+    ```bash
+    npx hardhat test test/ProductTrace.test.js
+    ```
 
-The project includes unit tests for the `ProductTrace.sol` contract located in `test/ProductTrace.test.js`.
+*   **Deploy to a Local Hardhat Network:**
+    1.  **Start a local Hardhat node:**
+        Open a new terminal in the project root and run:
+        ```bash
+        npx hardhat node
+        ```
+        This will start a local Ethereum node and provide you with several test accounts.
 
-To run the tests:
-```bash
-npx hardhat test
-```
+    2.  **Deploy the `ProductTrace` contract:**
+        Open another terminal in the project root. If you have a deployment script (e.g., `scripts/deploy.js`), run:
+        ```bash
+        npx hardhat run scripts/deploy.js --network localhost
+        ```
+        *(Note: You might need to create or adjust `scripts/deploy.js` to deploy `ProductTrace.sol` and log its address.)*
 
-### Deploying the Contract
+        A simple `scripts/deploy.js` might look like:
+        ```javascript
+        // scripts/deploy.js
+        async function main() {
+          const [deployer] = await ethers.getSigners();
+          console.log("Deploying contracts with the account:", deployer.address);
 
-**1. Local Hardhat Network:**
+          const ProductTrace = await ethers.getContractFactory("ProductTrace");
+          const productTrace = await ProductTrace.deploy();
+          await productTrace.waitForDeployment();
 
-Hardhat comes with a built-in local Ethereum network for development. You can deploy your contract to this network.
+          console.log("ProductTrace deployed to:", await productTrace.getAddress());
+        }
 
-Create a deployment script in the `scripts/` directory (e.g., `scripts/deploy.js`):
-```javascript
-// scripts/deploy.js
-async function main() {
-  const ProductTrace = await ethers.getContractFactory("ProductTrace");
-  console.log("Deploying ProductTrace...");
-  const productTrace = await ProductTrace.deploy();
-  await productTrace.waitForDeployment();
-  console.log("ProductTrace deployed to:", await productTrace.getAddress());
-}
+        main()
+          .then(() => process.exit(0))
+          .catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+        ```
 
-main()
-  .then(() => process.exit(0))
-  .catch(error => {
-    console.error(error);
-    process.exit(1);
-  });
-```
-Then run the script:
-```bash
-npx hardhat run scripts/deploy.js --network localhost 
-```
+### 2. Frontend UI
 
-**2. Other Networks (Testnets/Mainnet):**
+1.  **Configure Contract Address:**
+    After deploying the `ProductTrace` contract, you'll get its address. You'll need to configure this address in your frontend application (e.g., in a config file or environment variable) so it can interact with the deployed contract.
 
-To deploy to public testnets (e.g., Sepolia) or mainnet, you'll need to:
-1.  Configure network details (RPC URL, private key for deployment account) in `hardhat.config.js`.
-2.  Ensure your deployment account has enough native currency (ETH) to pay for gas.
-3.  Run the deployment script specifying the target network: `npx hardhat run scripts/deploy.js --network <networkName>`
+2.  **Start the UI Development Server:**
+    ```bash
+    cd product-trace-ui
+    npm run dev
+    # or
+    yarn dev
+    ```
+
+3.  Open your browser and navigate to `http://localhost:5173` (or the port specified by Vite).
+
+## Smart Contract Overview: `ProductTrace.sol`
+
+*   **Purpose:** Manages the lifecycle and traceability of products through various stages.
+*   **Key Entities & Stages:**
+    *   **Producers:** Addresses authorized to create products and perform certain actions. The contract deployer is a producer by default.
+    *   **Products:** Represent items being tracked. Each product has an owner, stage, and various attributes.
+    *   **Batches:** Created during the `PRODUCTION` stage, linking a main product to the raw materials consumed. Batches also store packaging and certification details.
+    *   **Stages (enum `ProductStage`):**
+        *   `NOT_STARTED` (0) - Default, though products are typically created directly into `RAW_MATERIAL`.
+        *   `RAW_MATERIAL` (1) - Initial stage for new products.
+        *   `PRODUCTION` (2) - Product is undergoing a manufacturing/assembly process.
+        *   `PACKAGING` (3) - Product has been packaged and certified.
+        *   `DISTRIBUTION` (4) - Product has been shipped/distributed.
+*   **Core Modifiers:**
+    *   `onlyOwner`: Restricts function access to the contract deployer/owner.
+    *   `onlyProducer`: Restricts function access to registered producers.
+    *   `onlyProductOwner(uint256 productId)`: Restricts function access to the current owner of the specified product.
+*   **Key Functions (see `ProductTrace.test.js` for detailed interactions):**
+    *   `addProducer(address _producer)`
+    *   `removeProducer(address _producer)`
+    *   `createProduct(string name, string source, string quality, uint256 initialQuantity, string pickupTimeManual)`
+    *   `startProduction(uint256 _productId, uint256[] consumedProductIds, uint256[] quantitiesUsed, string startTimeManual)`
+    *   `packageProduct(uint256 _productId, string halalCertHash, string bpomCertHash, string packagingTimeManual)`
+    *   `distributeProduct(uint256 _productId, string distributionDetails)`
+    *   `getFullTrace(uint256 _productId)`
+    *   `getAllProducts()`
+*   **Key Events:**
+    *   `ProducerAdded(address indexed producerAddress)`
+    *   `ProducerRemoved(address indexed producerAddress)`
+    *   `ProductCreated(uint256 indexed productId, string name, address indexed productOwner, ProductStage initialStage, uint256 timestamp)`
+    *   `ProductStageChanged(uint256 indexed productId, ProductStage oldStage, ProductStage newStage, address indexed changedBy, uint256 timestamp)`
+    *   `ProductQuantityUpdated(uint256 indexed productId, uint256 quantityUsed, uint256 newAvailableQuantity, uint256 timestamp)`
+    *   `BatchCreated(uint256 indexed batchId, uint256 indexed productId, address indexed createdBy, uint256[] consumedProductIds, uint256[] quantitiesUsed, uint256 timestamp)`
+    *   `BatchPackaged(uint256 indexed batchId, uint256 indexed productId, address indexed packagedBy, string halalCertHash, string bpomCertHash, uint256 timestamp)`
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit pull requests or open issues.
 
 ## License
 
-This project is licensed under the MIT License. See the SPDX license identifier in `ProductTrace.sol`.
+(Specify your license here, e.g., MIT, Apache 2.0, or leave blank if not yet decided.)
